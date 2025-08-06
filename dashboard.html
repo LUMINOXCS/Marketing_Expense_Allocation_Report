@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>Marketing Expense Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/PapaParse/5.3.2/papaparse.min.js"></script>
+</head>
+<body class="bg-gray-100 p-6">
+  <div class="max-w-6xl mx-auto bg-white p-6 rounded-xl shadow-md">
+    <div class="flex justify-between items-center mb-6">
+      <h1 class="text-3xl font-bold text-gray-800">Marketing Expense Dashboard</h1>
+      <span class="text-sm text-gray-500">Last Updated: <span id="last-updated"></span></span>
+    </div>
+
+    <!-- Filters -->
+    <div class="grid grid-cols-1 md:grid-cols-4 gap-4 mb-6">
+      <div>
+        <label class="block mb-1 font-medium text-gray-700">Campaign</label>
+        <select id="campaign-filter" class="w-full border-gray-300 rounded-md">
+          <option value="all">All</option>
+        </select>
+      </div>
+      <div>
+        <label class="block mb-1 font-medium text-gray-700">Region</label>
+        <select id="region-filter" class="w-full border-gray-300 rounded-md">
+          <option value="all">All</option>
+        </select>
+      </div>
+      <div>
+        <label class="block mb-1 font-medium text-gray-700">Team</label>
+        <select id="team-filter" class="w-full border-gray-300 rounded-md">
+          <option value="all">All</option>
+        </select>
+      </div>
+      <div>
+        <label class="block mb-1 font-medium text-gray-700">Chart Type</label>
+        <select id="chart-type" class="w-full border-gray-300 rounded-md">
+          <option value="bar">Bar (Stacked)</option>
+          <option value="line">Line</option>
+          <option value="pie">Pie</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- CSV Upload -->
+    <div class="mb-6">
+      <label class="block mb-2 font-medium text-gray-700">Upload CSV</label>
+      <input type="file" id="csv-upload" accept=".csv" class="w-full border-gray-300 rounded-md bg-gray-50 p-2">
+    </div>
+
+    <!-- Monthly Spend Chart -->
+    <div class="bg-gray-50 rounded-lg p-6 mb-6 shadow-inner">
+      <h2 class="text-xl font-semibold text-gray-800 mb-4">Monthly Spend Overview</h2>
+      <canvas id="marketing-chart" style="max-height: 400px;"></canvas>
+    </div>
+
+    <!-- Channel Investment Chart -->
+    <div class="bg-gray-50 rounded-lg p-6 mb-6 shadow-inner">
+      <h2 class="text-xl font-semibold text-gray-800 mb-4">Marketing Channel Investment</h2>
+      <canvas id="channel-investment-chart" style="max-height: 400px;"></canvas>
+    </div>
+
+    <!-- Table -->
+    <div class="bg-gray-50 rounded-lg p-6 shadow-inner">
+      <h2 class="text-xl font-semibold text-gray-800 mb-4">Expense Table</h2>
+      <div class="overflow-x-auto">
+        <table class="min-w-full divide-y divide-gray-200 text-sm text-gray-700">
+          <thead class="bg-gray-100">
+            <tr>
+              <th class="px-4 py-2 text-left">Campaign</th>
+              <th class="px-4 py-2 text-left">Channel</th>
+              <th class="px-4 py-2 text-left">Region</th>
+              <th class="px-4 py-2 text-left">Team</th>
+              <th class="px-4 py-2 text-left">Month</th>
+              <th class="px-4 py-2 text-left">Spend ($)</th>
+            </tr>
+          </thead>
+          <tbody id="expense-table-body" class="bg-white divide-y divide-gray-100"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let marketingData = [];
+    let chartInstance;
+
+    const campaignFilter = document.getElementById('campaign-filter');
+    const regionFilter = document.getElementById('region-filter');
+    const teamFilter = document.getElementById('team-filter');
+    const chartTypeSelect = document.getElementById('chart-type');
+
+    function groupLabel(channel, campaign) {
+      return `${channel} - ${campaign}`;
+    }
+
+    function randomColor(key) {
+      const hash = [...key].reduce((acc, char) => acc + char.charCodeAt(0), 0);
+      const r = (hash * 123) % 255;
+      const g = (hash * 456) % 255;
+      const b = (hash * 789) % 255;
+      return `rgb(${r}, ${g}, ${b})`;
+    }
+
+    function populateFilters() {
+      const unique = key => [...new Set(marketingData.map(d => d[key]))];
+      [campaignFilter, regionFilter, teamFilter].forEach(select => select.innerHTML = '<option value="all">All</option>');
+      unique('campaign').forEach(val => campaignFilter.innerHTML += `<option value="${val}">${val}</option>`);
+      unique('region').forEach(val => regionFilter.innerHTML += `<option value="${val}">${val}</option>`);
+      unique('team').forEach(val => teamFilter.innerHTML += `<option value="${val}">${val}</option>`);
+    }
+
+    function updateDashboard() {
+      const c = campaignFilter.value;
+      const r = regionFilter.value;
+      const t = teamFilter.value;
+
+      const filtered = marketingData.filter(d =>
+        (c === 'all' || d.campaign === c) &&
+        (r === 'all' || d.region === r) &&
+        (t === 'all' || d.team === t)
+      );
+
+      updateChart(filtered);
+      updateChannelInvestmentChart(filtered);
+      updateTable(filtered);
+    }
+
+    function updateChart(data) {
+      const ctx = document.getElementById('marketing-chart').getContext('2d');
+      if (chartInstance) chartInstance.destroy();
+
+      const chartType = chartTypeSelect.value;
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const labels = [...new Set(data.map(d => groupLabel(d.channel, d.campaign)))];
+
+      const datasets = labels.map(label => {
+        const [channel, campaign] = label.split(' - ');
+        return {
+          label: label,
+          backgroundColor: randomColor(label),
+          borderColor: randomColor(label),
+          fill: chartType !== 'line',
+          data: months.map(month =>
+            data.filter(d => d.channel === channel && d.campaign === campaign && d.month === month)
+                .reduce((sum, d) => sum + d.spend, 0)
+          )
+        };
+      });
+
+      const pieData = {
+        labels: labels,
+        datasets: [{
+          data: labels.map(label => {
+            const [channel, campaign] = label.split(' - ');
+            return data.filter(d => d.channel === channel && d.campaign === campaign)
+                       .reduce((sum, d) => sum + d.spend, 0);
+          }),
+          backgroundColor: labels.map(l => randomColor(l))
+        }]
+      };
+
+      chartInstance = new Chart(ctx, {
+        type: chartType,
+        data: chartType === 'pie' ? pieData : { labels: months, datasets },
+        options: {
+          responsive: true,
+          plugins: { legend: { position: 'top' } },
+          scales: chartType === 'pie' ? {} : {
+            x: {
+              stacked: chartType === 'bar',
+              title: { display: true, text: 'Month' }
+            },
+            y: {
+              stacked: chartType === 'bar',
+              title: { display: true, text: 'Spend ($)' },
+              beginAtZero: true
+            }
+          }
+        }
+      });
+    }
+
+    function updateChannelInvestmentChart(data) {
+      const ctx = document.getElementById('channel-investment-chart').getContext('2d');
+      if (window.channelChartInstance) window.channelChartInstance.destroy();
+
+      const months = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const channels = [...new Set(data.map(d => d.channel))];
+
+      const datasets = channels.map(channel => ({
+        label: channel,
+        backgroundColor: randomColor(channel),
+        borderColor: randomColor(channel),
+        data: months.map(month =>
+          data.filter(d => d.channel === channel && d.month === month)
+              .reduce((sum, d) => sum + d.spend, 0)
+        )
+      }));
+
+      window.channelChartInstance = new Chart(ctx, {
+        type: 'bar',
+        data: {
+          labels: months,
+          datasets: datasets
+        },
+        options: {
+          responsive: true,
+          plugins: { legend: { position: 'top' } },
+          scales: {
+            x: { stacked: true, title: { display: true, text: 'Month' } },
+            y: { stacked: true, title: { display: true, text: 'Spend ($)' }, beginAtZero: true }
+          }
+        }
+      });
+    }
+
+    function updateTable(data) {
+      const tableBody = document.getElementById('expense-table-body');
+      tableBody.innerHTML = '';
+      data.forEach(d => {
+        tableBody.innerHTML += `
+          <tr>
+            <td class="px-4 py-2">${d.campaign}</td>
+            <td class="px-4 py-2">${d.channel}</td>
+            <td class="px-4 py-2">${d.region}</td>
+            <td class="px-4 py-2">${d.team}</td>
+            <td class="px-4 py-2">${d.month}</td>
+            <td class="px-4 py-2">$${d.spend.toFixed(2)}</td>
+          </tr>`;
+      });
+    }
+
+    document.getElementById('csv-upload').addEventListener('change', (e) => {
+      const file = e.target.files[0];
+      if (!file) return;
+      Papa.parse(file, {
+        header: true,
+        skipEmptyLines: true,
+        complete: function(results) {
+          marketingData = results.data.map(row => ({
+            campaign: row.campaign || row.Campaign,
+            region: row.region || row.Region,
+            team: row.team || row.Team,
+            channel: row.channel || row.Channel,
+            month: row.month || row.Month,
+            spend: parseFloat(row.spend || row.Spend || 0)
+          }));
+          populateFilters();
+          updateDashboard();
+        }
+      });
+    });
+
+    [campaignFilter, regionFilter, teamFilter, chartTypeSelect].forEach(el =>
+      el.addEventListener('change', updateDashboard)
+    );
+
+    window.onload = () => {
+      document.getElementById('last-updated').textContent = new Date().toLocaleDateString();
+    };
+  </script>
+</body>
+</html>
